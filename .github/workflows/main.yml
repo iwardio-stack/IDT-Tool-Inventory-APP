@@ -15,59 +15,160 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+
+      # ============================================
+      # 1. CHECKOUT REPOSITORY
+      # ============================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Java
+
+      # ============================================
+      # 2. JAVA 17
+      # ============================================
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Set up Android SDK
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
-      # 4. Install Android SDK components
-      - name: Install Android SDK components
+      # ============================================
+      # 3. GRADLE 8.9
+      # ============================================
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+
+      # ============================================
+      # 4. FIND AND PREPARE ANDROID SDK
+      # ============================================
+      - name: Prepare Android SDK
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          set -e
 
-      # 5. Find and extract the project ZIP
+          echo "======================================"
+          echo "ANDROID SDK"
+          echo "======================================"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          SDKMANAGER=""
+
+          if [ -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+              -type f \
+              -name sdkmanager \
+              2>/dev/null | head -n 1 || true)
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find /usr/local/lib/android/sdk \
+              -type f \
+              -name sdkmanager \
+              2>/dev/null | head -n 1 || true)
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager could not be found."
+            exit 1
+          fi
+
+          echo "Using sdkmanager:"
+          echo "$SDKMANAGER"
+
+          echo "Accepting Android SDK licenses..."
+          yes | "$SDKMANAGER" --licenses || true
+
+          echo "Installing required Android packages..."
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          echo "Android SDK preparation complete."
+
+
+      # ============================================
+      # 5. FIND INVENTORY ZIP
+      # ============================================
+      - name: Find Tool Inventory ZIP
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo "SEARCHING FOR TOOL INVENTORY ZIP"
+          echo "======================================"
+
+          ZIP_FILE=$(find . \
+            -maxdepth 3 \
+            -type f \
+            -iname 'IDT-Tool-Inventory*.zip' \
+            -not -path './.git/*' \
+            | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo ""
+            echo "ERROR: Tool Inventory ZIP was not found."
+            echo ""
+            echo "Files currently in repository:"
+            find . -maxdepth 4 -type f \
+              -not -path './.git/*'
+            exit 1
+          fi
+
+          echo ""
+          echo "FOUND:"
+          echo "$ZIP_FILE"
+
+          echo "$ZIP_FILE" > inventory_zip.txt
+
+
+      # ============================================
+      # 6. EXTRACT PROJECT
+      # ============================================
       - name: Extract Tool Inventory project
         shell: bash
         run: |
           set -e
 
           echo "======================================"
-          echo "FINDING TOOL INVENTORY PROJECT ZIP"
+          echo "EXTRACTING TOOL INVENTORY PROJECT"
           echo "======================================"
 
-          ZIP_FILE=$(find . -maxdepth 2 -type f \
-            -iname 'IDT-Tool-Inventory*.zip' \
-            -not -path './.git/*' | head -n 1)
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: Tool Inventory ZIP was not found."
-            find . -maxdepth 3 -type f
-            exit 1
-          fi
-
-          echo "Found ZIP: $ZIP_FILE"
+          ZIP_FILE=$(cat inventory_zip.txt)
 
           rm -rf build-project
+
           mkdir -p build-project
 
           unzip -q "$ZIP_FILE" -d build-project
 
           echo ""
-          echo "Extracted files:"
-          find build-project -maxdepth 4 -type f | head -100
+          echo "PROJECT EXTRACTED"
+          echo ""
+          echo "Project files:"
+          
+          find build-project \
+            -maxdepth 5 \
+            -type f \
+            | sort \
+            | head -200
 
-      # 6. Locate the actual Android project
+
+      # ============================================
+      # 7. LOCATE ANDROID PROJECT
+      # ============================================
       - name: Locate Android project
         shell: bash
         run: |
@@ -81,7 +182,11 @@ jobs:
 
           SETTINGS_FILE=$(find build-project \
             -type f \
-            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            \( \
+              -name "settings.gradle" \
+              -o \
+              -name "settings.gradle.kts" \
+            \) \
             | head -n 1)
 
           if [ -n "$SETTINGS_FILE" ]; then
@@ -89,19 +194,92 @@ jobs:
           fi
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No Android Gradle project found."
-            echo "Looking for Gradle files..."
-            find build-project -type f \
-              \( -name "build.gradle" -o -name "build.gradle.kts" \)
+
+            BUILD_FILE=$(find build-project \
+              -type f \
+              \( \
+                -name "build.gradle" \
+                -o \
+                -name "build.gradle.kts" \
+              \) \
+              | head -n 1)
+
+            if [ -n "$BUILD_FILE" ]; then
+              PROJECT_DIR=$(dirname "$BUILD_FILE")
+            fi
+
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo ""
+            echo "ERROR: Android Gradle project could not be found."
+            echo ""
+            echo "Gradle files found:"
+            
+            find build-project \
+              -type f \
+              \( \
+                -name "build.gradle" \
+                -o \
+                -name "build.gradle.kts" \
+                -o \
+                -name "settings.gradle" \
+                -o \
+                -name "settings.gradle.kts" \
+              )
+
             exit 1
           fi
 
-          echo "Android project found at:"
+          echo ""
+          echo "ANDROID PROJECT:"
           echo "$PROJECT_DIR"
 
           echo "$PROJECT_DIR" > project_dir.txt
 
-      # 7. Build APK
+
+      # ============================================
+      # 8. SHOW PROJECT STRUCTURE
+      # ============================================
+      - name: Verify project
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_DIR=$(cat project_dir.txt)
+
+          echo "======================================"
+          echo "VERIFYING PROJECT"
+          echo "======================================"
+
+          echo "Project:"
+          echo "$PROJECT_DIR"
+
+          echo ""
+
+          echo "Files:"
+          find "$PROJECT_DIR" \
+            -maxdepth 4 \
+            -type f \
+            | sort
+
+          echo ""
+
+          if [ ! -f "$PROJECT_DIR/settings.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+            echo "WARNING: settings.gradle not found."
+          fi
+
+          if [ ! -f "$PROJECT_DIR/build.gradle" ] && \
+             [ ! -f "$PROJECT_DIR/build.gradle.kts" ]; then
+            echo "ERROR: Root Gradle build file not found."
+            exit 1
+          fi
+
+
+      # ============================================
+      # 9. BUILD APK
+      # ============================================
       - name: Build DEBUG APK
         shell: bash
         run: |
@@ -115,65 +293,82 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          if [ -f "./gradlew" ]; then
-            echo "Gradle wrapper found."
-            chmod +x ./gradlew
-            ./gradlew clean assembleDebug --stacktrace
-          else
-            echo "No Gradle wrapper found."
-            echo "Installing Gradle 8.9..."
+          echo ""
+          echo "Gradle version:"
+          gradle --version
 
-            cd "$GITHUB_WORKSPACE"
+          echo ""
+          echo "Cleaning project..."
 
-            wget -q \
-              https://services.gradle.org/distributions/gradle-8.9-bin.zip \
-              -O gradle.zip
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            clean
 
-            unzip -q gradle.zip -d "$RUNNER_TEMP/gradle"
+          echo ""
+          echo "Building APK..."
 
-            export PATH="$RUNNER_TEMP/gradle/gradle-8.9/bin:$PATH"
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            assembleDebug
 
-            cd "$PROJECT_DIR"
+          echo ""
+          echo "BUILD COMPLETED."
 
-            gradle clean assembleDebug --stacktrace
-          fi
 
-      # 8. Find generated APK
-      - name: Find APK
+      # ============================================
+      # 10. FIND APK
+      # ============================================
+      - name: Find generated APK
         shell: bash
         run: |
           set -e
 
           echo "======================================"
-          echo "SEARCHING FOR APK"
+          echo "SEARCHING FOR GENERATED APK"
           echo "======================================"
 
-          APK=$(find build-project \
+          APK_FILE=$(find build-project \
             -type f \
             -name "*.apk" \
             | grep -i "debug" \
-            | head -n 1)
+            | head -n 1 || true)
 
-          if [ -z "$APK" ]; then
-            APK=$(find build-project \
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find build-project \
               -type f \
               -name "*.apk" \
-              | head -n 1)
+              | head -n 1 || true)
           fi
 
-          if [ -z "$APK" ]; then
+          if [ -z "$APK_FILE" ]; then
+            echo ""
             echo "ERROR: APK was not generated."
-            find build-project -type f | grep -E '\.(apk|aab)$' || true
+            echo ""
+            echo "Searching project for APK files:"
+            
+            find build-project \
+              -type f \
+              -name "*.apk" \
+              || true
+
             exit 1
           fi
 
+          echo ""
           echo "APK FOUND:"
-          echo "$APK"
+          echo "$APK_FILE"
 
           mkdir -p final-apk
-          cp "$APK" final-apk/IDT-Tool-Inventory.apk
 
-      # 9. Upload APK
+          cp "$APK_FILE" \
+            final-apk/IDT-Tool-Inventory.apk
+
+
+      # ============================================
+      # 11. UPLOAD APK ARTIFACT
+      # ============================================
       - name: Upload FINAL APK
         uses: actions/upload-artifact@v4
         with:
@@ -181,3 +376,18 @@ jobs:
           path: final-apk/IDT-Tool-Inventory.apk
           if-no-files-found: error
           retention-days: 30
+
+
+      # ============================================
+      # 12. BUILD COMPLETE
+      # ============================================
+      - name: Build complete
+        shell: bash
+        run: |
+          echo ""
+          echo "======================================"
+          echo "IDT TOOL INVENTORY BUILD SUCCESSFUL"
+          echo "======================================"
+          echo ""
+          echo "APK:"
+          ls -lh final-apk/IDT-Tool-Inventory.apk
