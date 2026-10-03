@@ -30,23 +30,19 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Locate Android SDK
+      - name: Prepare Android SDK
         shell: bash
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_HOME" || true
 
-      - name: Install required Android SDK components
-        shell: bash
-        run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -f "$SDKMANAGER" ]; then
-            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1)
+            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
           fi
 
-          echo "Using sdkmanager: $SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER"
 
           yes | "$SDKMANAGER" --licenses || true
 
@@ -55,12 +51,112 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Find Tool Inventory project
+      - name: Find inventory ZIP
         shell: bash
         run: |
-          echo "Searching for IDT Tool Inventory project..."
+          echo "Searching for inventory ZIP..."
 
-          ZIP_FILE=$(find . \
-            -maxdepth 3 \
+          ZIP_FILE=""
+
+          if [ -f "IDT-Tool-Inventory-APP-FULL.zip" ]; then
+            ZIP_FILE="IDT-Tool-Inventory-APP-FULL.zip"
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Looking for any IDT inventory ZIP..."
+            ZIP_FILE=$(find . -type f -name "*.zip" | head -n 1)
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Inventory ZIP not found."
+            exit 1
+          fi
+
+          echo "ZIP FOUND: $ZIP_FILE"
+
+          mkdir -p extracted
+
+          unzip -o "$ZIP_FILE" -d extracted
+
+      - name: Locate Android project
+        shell: bash
+        run: |
+          echo "Searching for Gradle Android project..."
+
+          PROJECT_DIR=""
+
+          SETTINGS_FILE=$(find extracted \
             -type f \
-            -iname "IDT-Tool-Inventory-APP-F
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            | head -n 1)
+
+          if [ -n "$SETTINGS_FILE" ]; then
+            PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: Could not find settings.gradle or settings.gradle.kts."
+            echo "Contents of extracted folder:"
+            find extracted -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          echo "ANDROID PROJECT:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Verify project
+        shell: bash
+        run: |
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
+          echo "Project contents:"
+          find "$PROJECT_DIR" -maxdepth 2 -type f | sort
+
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+          fi
+
+      - name: Build DEBUG APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew clean assembleDebug --no-daemon
+          else
+            gradle clean assembleDebug --no-daemon
+          fi
+
+      - name: Find generated APK
+        shell: bash
+        run: |
+          echo "Searching for generated APK..."
+
+          APK_FILE=$(find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            | head -n 1)
+
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK FOUND:"
+          echo "$APK_FILE"
+
+          mkdir -p final-apk
+
+          cp "$APK_FILE" \
+            "final-apk/IDT-Tool-Inventory-APP.apk"
+
+      - name: Upload FINAL APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: IDT-Tool-Inventory-APP
+          path: final-apk/IDT-Tool-Inventory-APP.apk
+          if-no-files-found: error
