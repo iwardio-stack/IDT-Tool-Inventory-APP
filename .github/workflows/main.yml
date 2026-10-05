@@ -33,12 +33,27 @@ jobs:
         shell: bash
         run: |
           set -e
-          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip' -print -quit)"
+
+          ZIP_FILE=""
+
+          for candidate in \
+            "IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip" \
+            "IDT-Tool-Inventory-APP-FULL-V3.zip" \
+            "IDT-Tool-Inventory-APP-FULL.zip"
+          do
+            if [ -f "$candidate" ]; then
+              ZIP_FILE="$candidate"
+              break
+            fi
+          done
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip was not found."
-            echo "ZIP files currently in the repository:"
-            find . -maxdepth 2 -type f -name '*.zip' -print
+            ZIP_FILE="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1 || true)"
+          fi
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No inventory ZIP was found in the repository."
+            find . -maxdepth 3 -type f | sort
             exit 1
           fi
 
@@ -49,35 +64,39 @@ jobs:
         shell: bash
         run: |
           set -e
+
           rm -rf build_project
           mkdir -p build_project
+
           unzip -q "$ZIP_FILE" -d build_project
 
-          PROJECT_DIR="$(find build_project -type f -name 'settings.gradle.kts' -printf '%h
-' | head -n 1)"
+          PROJECT_DIR="$(find build_project -type f -name 'settings.gradle.kts' -exec dirname {} \; | head -n 1 || true)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="$(find build_project -type f -name 'settings.gradle' -exec dirname {} \; | head -n 1 || true)"
+          fi
 
           if [ -z "$PROJECT_DIR" ]; then
             echo "ERROR: No Android Gradle project was found after extracting the ZIP."
-            find build_project -maxdepth 5 -type f | sort
+            find build_project -maxdepth 6 -type f | sort
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project: $PROJECT_DIR"
+          echo "Android project found at: $PROJECT_DIR"
 
       - name: Prepare Android SDK
         shell: bash
         run: |
           set -e
 
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
-          # GitHub-hosted Ubuntu runners have the Android SDK installed,
-          # but sdkmanager is not always on PATH.
           SDKMANAGER=""
 
-          for candidate in             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "$ANDROID_HOME/cmdline-tools/bin/sdkmanager"             "$ANDROID_HOME/tools/bin/sdkmanager"             "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"             "/usr/local/lib/android/sdk/cmdline-tools/bin/sdkmanager"
+          for candidate in \
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" \
+            "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
+            "/usr/local/lib/android/sdk/cmdline-tools/bin/sdkmanager"
           do
             if [ -x "$candidate" ]; then
               SDKMANAGER="$candidate"
@@ -91,7 +110,8 @@ jobs:
 
           if [ -z "$SDKMANAGER" ]; then
             echo "ERROR: sdkmanager could not be found."
-            find "$ANDROID_HOME" -maxdepth 5 -type f -name sdkmanager -print 2>/dev/null || true
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            find "$ANDROID_HOME" -maxdepth 6 -type f -name sdkmanager -print 2>/dev/null || true
             exit 1
           fi
 
@@ -102,32 +122,34 @@ jobs:
 
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
 
-          "$SDKMANAGER"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
-      - name: Verify project
+      - name: Verify Android project
         shell: bash
         run: |
           set -e
           cd "$PROJECT_DIR"
 
-          if [ ! -f "settings.gradle.kts" ]; then
-            echo "ERROR: settings.gradle.kts missing."
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            echo "ERROR: Gradle settings file is missing."
             exit 1
           fi
 
-          if [ ! -f "app/build.gradle.kts" ]; then
-            echo "ERROR: app/build.gradle.kts missing."
+          if [ ! -f "app/build.gradle.kts" ] && [ ! -f "app/build.gradle" ]; then
+            echo "ERROR: app Gradle file is missing."
             exit 1
           fi
 
-          echo "Project verification passed."
+          echo "Android project verification passed."
 
       - name: Build DEBUG APK
         shell: bash
         run: |
           set -e
           cd "$PROJECT_DIR"
-
           gradle --no-daemon clean :app:assembleDebug
 
       - name: Verify APK
@@ -139,6 +161,7 @@ jobs:
 
           if [ ! -f "$APK" ]; then
             echo "ERROR: APK was not generated."
+            find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
             exit 1
           fi
 
