@@ -1,0 +1,86 @@
+name: Build IDT Tool Inventory APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build FINAL APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Locate inventory project ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip' -print -quit)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip was not found."
+            find . -maxdepth 2 -type f -name '*.zip' -print
+            exit 1
+          fi
+          echo "Using project ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+
+      - name: Extract inventory project
+        shell: bash
+        run: |
+          set -e
+          rm -rf build_project
+          mkdir -p build_project
+          unzip -q "$ZIP_FILE" -d build_project
+          PROJECT_DIR="build_project/IDT-Tool-Inventory-APP"
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+          test -f "$PROJECT_DIR/app/src/main/java/com/idt/toolinventory/MainActivity.kt"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -e
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Build DEBUG APK
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+          gradle --no-daemon clean :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+
+      - name: Upload FINAL APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: IDT-Tool-Inventory-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
