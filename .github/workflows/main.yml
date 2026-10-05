@@ -34,11 +34,14 @@ jobs:
         run: |
           set -e
           ZIP_FILE="$(find . -maxdepth 2 -type f -name 'IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip' -print -quit)"
+
           if [ -z "$ZIP_FILE" ]; then
             echo "ERROR: IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip was not found."
+            echo "ZIP files currently in the repository:"
             find . -maxdepth 2 -type f -name '*.zip' -print
             exit 1
           fi
+
           echo "Using project ZIP: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
@@ -49,33 +52,97 @@ jobs:
           rm -rf build_project
           mkdir -p build_project
           unzip -q "$ZIP_FILE" -d build_project
-          PROJECT_DIR="build_project/IDT-Tool-Inventory-APP"
-          test -f "$PROJECT_DIR/settings.gradle.kts"
-          test -f "$PROJECT_DIR/app/src/main/java/com/idt/toolinventory/MainActivity.kt"
+
+          PROJECT_DIR="$(find build_project -type f -name 'settings.gradle.kts' -printf '%h
+' | head -n 1)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: No Android Gradle project was found after extracting the ZIP."
+            find build_project -maxdepth 5 -type f | sort
+            exit 1
+          fi
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Android project: $PROJECT_DIR"
 
       - name: Prepare Android SDK
         shell: bash
         run: |
           set -e
-          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          # GitHub-hosted Ubuntu runners have the Android SDK installed,
+          # but sdkmanager is not always on PATH.
+          SDKMANAGER=""
+
+          for candidate in             "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "$ANDROID_HOME/cmdline-tools/bin/sdkmanager"             "$ANDROID_HOME/tools/bin/sdkmanager"             "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager"             "/usr/local/lib/android/sdk/cmdline-tools/bin/sdkmanager"
+          do
+            if [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME" -type f -name sdkmanager -perm -111 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager could not be found."
+            find "$ANDROID_HOME" -maxdepth 5 -type f -name sdkmanager -print 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Using sdkmanager: $SDKMANAGER"
+
+          SDK_BIN="$(dirname "$SDKMANAGER")"
+          echo "$SDK_BIN" >> "$GITHUB_PATH"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER"             "platform-tools"             "platforms;android-35"             "build-tools;35.0.0"
+
+      - name: Verify project
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          if [ ! -f "settings.gradle.kts" ]; then
+            echo "ERROR: settings.gradle.kts missing."
+            exit 1
+          fi
+
+          if [ ! -f "app/build.gradle.kts" ]; then
+            echo "ERROR: app/build.gradle.kts missing."
+            exit 1
+          fi
+
+          echo "Project verification passed."
 
       - name: Build DEBUG APK
         shell: bash
         run: |
           set -e
           cd "$PROJECT_DIR"
+
           gradle --no-daemon clean :app:assembleDebug
 
       - name: Verify APK
         shell: bash
         run: |
           set -e
+
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$APK"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+
+          echo "APK successfully generated:"
           ls -lh "$APK"
 
       - name: Upload FINAL APK
