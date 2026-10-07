@@ -2,8 +2,7 @@ name: Build IDT Tool Inventory APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -18,159 +17,67 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Load latest Firebase source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find . -maxdepth 1 -type f -name 'IDT-Tool-Inventory-APP-FIREBASE-LIVE-SYNC-V*.zip' -printf '%f\n' | sort -V | tail -n 1)"
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: No IDT Firebase source ZIP found in repository root."
+            exit 1
+          fi
+          echo "Using source ZIP: $ZIP"
+          rm -rf /tmp/idt-source
+          mkdir -p /tmp/idt-source
+          unzip -q -o "$ZIP" -d /tmp/idt-source
+          rsync -a --exclude='.git' /tmp/idt-source/ ./
+          echo "Loaded source project from $ZIP"
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
-
-      - name: Locate inventory project ZIP
-        shell: bash
-        run: |
-          set -e
-
-          ZIP_FILE=""
-
-          for candidate in \
-            "IDT-Tool-Inventory-APP-FULL-V3-CORRECTED.zip" \
-            "IDT-Tool-Inventory-APP-FULL-V3.zip" \
-            "IDT-Tool-Inventory-APP-FULL.zip"
-          do
-            if [ -f "$candidate" ]; then
-              ZIP_FILE="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$ZIP_FILE" ]; then
-            ZIP_FILE="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1 || true)"
-          fi
-
-          if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No inventory ZIP was found in the repository."
-            find . -maxdepth 3 -type f | sort
-            exit 1
-          fi
-
-          echo "Using project ZIP: $ZIP_FILE"
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
-
-      - name: Extract inventory project
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf build_project
-          mkdir -p build_project
-
-          unzip -q "$ZIP_FILE" -d build_project
-
-          PROJECT_DIR="$(find build_project -type f -name 'settings.gradle.kts' -exec dirname {} \; | head -n 1 || true)"
-
-          if [ -z "$PROJECT_DIR" ]; then
-            PROJECT_DIR="$(find build_project -type f -name 'settings.gradle' -exec dirname {} \; | head -n 1 || true)"
-          fi
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No Android Gradle project was found after extracting the ZIP."
-            find build_project -maxdepth 6 -type f | sort
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Android project found at: $PROJECT_DIR"
+          gradle-version: '8.9'
 
       - name: Prepare Android SDK
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-          SDKMANAGER=""
-
-          for candidate in \
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-            "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" \
-            "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
-            "/usr/local/lib/android/sdk/cmdline-tools/bin/sdkmanager"
-          do
-            if [ -x "$candidate" ]; then
-              SDKMANAGER="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME" -type f -name sdkmanager -perm -111 2>/dev/null | head -n 1 || true)"
-          fi
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager could not be found."
-            echo "ANDROID_HOME=$ANDROID_HOME"
-            find "$ANDROID_HOME" -maxdepth 6 -type f -name sdkmanager -print 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "Using sdkmanager: $SDKMANAGER"
-
-          SDK_BIN="$(dirname "$SDKMANAGER")"
-          echo "$SDK_BIN" >> "$GITHUB_PATH"
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Verify Android project
+      - name: Verify Firebase Android project
         shell: bash
         run: |
-          set -e
-          cd "$PROJECT_DIR"
-
-          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
-            echo "ERROR: Gradle settings file is missing."
-            exit 1
-          fi
-
-          if [ ! -f "app/build.gradle.kts" ] && [ ! -f "app/build.gradle" ]; then
-            echo "ERROR: app Gradle file is missing."
-            exit 1
-          fi
-
-          echo "Android project verification passed."
+          set -euo pipefail
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/google-services.json
+          test -f app/src/main/java/com/idt/toolinventory/MainActivity.kt
+          grep -q 'com.google.gms.google-services' app/build.gradle.kts
+          grep -q 'firebase-firestore' app/build.gradle.kts
+          grep -q 'FirebaseCloudSync' app/src/main/java/com/idt/toolinventory/MainActivity.kt
+          echo "Firebase Android project verified."
 
       - name: Build DEBUG APK
-        shell: bash
-        run: |
-          set -e
-          cd "$PROJECT_DIR"
-          gradle --no-daemon clean :app:assembleDebug
+        run: gradle --no-daemon clean :app:assembleDebug --stacktrace
 
       - name: Verify APK
         shell: bash
         run: |
-          set -e
-
-          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK was not generated."
-            find "$PROJECT_DIR/app/build/outputs" -type f 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "APK successfully generated:"
-          ls -lh "$APK"
+          set -euo pipefail
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload FINAL APK
         uses: actions/upload-artifact@v4
         with:
           name: IDT-Tool-Inventory-APK
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
